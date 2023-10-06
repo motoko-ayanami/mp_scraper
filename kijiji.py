@@ -23,7 +23,7 @@ URLS = {
 }
 
 BASE_URL = 'https://www.kijiji.ca'
-DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1159691614155968642/Iveu7M1OhHZiFuy7Dfi1RqGR30kjjpNVe_yadUUl7OD7gwIpWdREbpb2V45uRz8Ot_ed'
+DISCORD_WEBHOOK_URL = 'ENTER WEBHOOK HERE'
 
 def get_last_seen_ads(filename):
     if not os.path.exists(filename):
