@@ -1,56 +1,32 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const axios = require('axios');
-const { DateTime } = require('luxon');
 
-const DISCORD_WEBHOOK_URL = 'ENTER_DISCORD_WEBHOOK_HERE';
-
-const AD_LINKS = [
-'ENTER_LINKS_HERE'
-];
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-async function pauseIfMidnightTo7am() {
-    const nowInEasternTime = DateTime.now().setZone("America/Montreal");
-    const currentHour = nowInEasternTime.hour;
-
-    if (currentHour < 7) {
-        console.log("Pausing script execution because it's between midnight and 7 AM Eastern Time.");
-        const msTill7 = nowInEasternTime.startOf('day').plus({ hours: 7 }).diff(nowInEasternTime, 'milliseconds').milliseconds;
-        await sleep(msTill7);
-    }
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-Date.prototype.dst = function() {
-    const jan = new Date(this.getFullYear(), 0, 1).getTimezoneOffset();
-    const jul = new Date(this.getFullYear(), 6, 1).getTimezoneOffset();
-    return Math.min(jan, jul) === this.getTimezoneOffset();
-};
+const AD_LINKS = [link,link2, etc];
 
 async function declineCookies(page) {
     try {
         await page.waitForSelector('[data-testid="cookie-policy-manage-dialog-accept-button"]', { timeout: 5000 });
         await page.click('[data-testid="cookie-policy-manage-dialog-accept-button"]');
         console.log('Declined optional cookies.');
-        await page.waitForTimeout(2000); 
+        await page.waitForTimeout(2000);
     } catch (error) {
-        console.log('Cookie popup not found or another error occurred while trying to decline cookies.', error);
+        if (error.name === 'TimeoutError') {
+            // If it's a timeout error, it means the selector was not found, so we can silently ignore it.
+            console.log('Cookie popup not found, moving on.');
+        } else {
+            // If it's not a timeout error, we log it.
+            console.log('Another error occurred while trying to decline cookies.', error);
+        }
     }
 }
+
 
 async function loginToFacebook(page) {
     await page.goto('https://www.facebook.com/login');
     await declineCookies(page);
-    await page.type('#email', 'ENTER_EMAIL_HERE');
-    await page.type('#pass', 'ENTER_PASSWORD_HERE');
+    await page.type('#email', 'INSERT_EMAIL_HERE');
+    await page.type('#pass', 'INSERT_PASSWORD_HERE');
     await page.click('[name="login"]');
     await page.waitForTimeout(10000);
     await page.waitForSelector('body');
@@ -64,7 +40,7 @@ async function checkForBlock(page) {
         });
 
         if (blockedMessage) {
-            console.log("Blocked by Facebook. Sending alert to Discord.");
+            console.log("Blocked by Facebook.");
             await page.waitForTimeout(3600000);
             return true;
         }
@@ -75,37 +51,7 @@ async function checkForBlock(page) {
     }
 }
 
-async function sendToDiscord(adLinks) {
-    try {
-        for (const link of adLinks) {
-            await axios.post(DISCORD_WEBHOOK_URL, {
-                content: link
-            });
-            console.log(`Sent new ad ${link} to Discord`);
-            await sleep(1000);
-        }
-    } catch (error) {
-        console.error('Error sending message to Discord', error);
-    }
-}
-
-async function isNewAdvertisement(page, adLink) {
-    await page.goto(adLink);
-    await page.waitForTimeout(5000);
-
-    return await page.evaluate(() => {
-        const bodyText = document.body.innerText || document.body.textContent;
-        const sentences = bodyText.split('.').map(sentence => sentence.trim());
-        for (const sentence of sentences) {
-            if (sentence.includes("listed") && sentence.includes("minutes")) {
-                return true;
-            }
-        }
-        return false;
-    });
-}
-
-async function fetchAdsFromLink(page, adLink) {
+async function fetchAdsFromLink(page, adLink, fileName) {
     await page.goto(adLink);
     await page.waitForTimeout(10000);
 
@@ -123,31 +69,43 @@ async function fetchAdsFromLink(page, adLink) {
                        .filter(Boolean);
     });
 
-    const fileName = 'facebook_listings_' + adLink.split('longitude=')[1].split('&')[0] + '.txt';
-    let isFirstRun = false;
-    let previousAds = [];
-    
+    let existingAds = [];
     if (fs.existsSync(fileName)) {
-        previousAds = fs.readFileSync(fileName, 'utf-8').split('\n').filter(Boolean);
-    } else {
-        isFirstRun = true;
+        existingAds = fs.readFileSync(fileName, 'utf-8').split('\n').filter(Boolean);
     }
 
-    let adsToSend = [];
+    const newAds = ads.filter(ad => !existingAds.includes(ad));
 
-    for (const ad of ads) {
-        if (!previousAds.includes(ad) && await isNewAdvertisement(page, ad)) {
-            adsToSend.push(ad);
+    for (const ad of newAds) {
+        const isRecent = await checkListingTime(page, ad);
+        if (isRecent) {
+            console.log(ad); // Print only if the ad was listed within minutes
+            fs.appendFileSync(fileName, ad + '\n', 'utf-8'); // Append to file if it's a new and recent ad
+
+            // Send the link to the Discord webhook
+            await axios.post('INSERT_DISCORD_WEBHOOK_HERE', {
+                content: ad
+            }).catch(error => console.error('Error sending to Discord:', error));
         }
     }
 
-    fs.writeFileSync(fileName, ads.join('\n'), 'utf-8');
-
-    if (adsToSend.length && !isFirstRun) {
-        await sendToDiscord(adsToSend);
-    } else {
-        console.log(`No new advertisements found for ${adLink}.`);
+    if (newAds.length) {
+        fs.appendFileSync(fileName, newAds.join('\n') + '\n', 'utf-8');
     }
+}
+
+async function checkListingTime(page, adLink) {
+    await page.goto(adLink);
+    await page.waitForTimeout(3000); // Wait for 3 seconds to ensure the page loads
+
+    // Scrape the entire HTML content of the page
+    const pageContent = await page.content();
+    
+    // This regex looks for a pattern where the listing time is mentioned in minutes
+    const minutesRegex = /\blisted\s+(\d+)\s+minutes?\s+ago\b/i;
+    const isListedInMinutes = minutesRegex.test(pageContent);
+
+    return isListedInMinutes;
 }
 
 (async () => {
@@ -157,14 +115,16 @@ async function fetchAdsFromLink(page, adLink) {
     await loginToFacebook(page);
     console.log('Logged in!');
 
-    while (true) {
-        await pauseIfMidnightTo7am();
+    const fileName = 'facebook_listings.txt';
 
+    while (true) {
         for (const adLink of AD_LINKS) {
-            await fetchAdsFromLink(page, adLink);
+            await fetchAdsFromLink(page, adLink, fileName);
         }
 
-        console.log("Waiting for 4 minutes before checking the links again.");
-        await page.waitForTimeout(240000);
+        // Generate a random wait time between 4 and 6 minutes (240000 to 360000 milliseconds)
+        const waitTime = Math.random() * (360000 - 240000) + 240000;
+        console.log(`Waiting for ${waitTime / 60000} minutes before checking the links again.`);
+        await page.waitForTimeout(waitTime);
     }
 })();
